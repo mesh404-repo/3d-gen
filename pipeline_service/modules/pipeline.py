@@ -128,6 +128,7 @@ class GenerationPipeline:
             prompt_image=image,
             seed=request.seed,
             prompt="Show this object in three-quarters view and make sure it is fully visible. Turn background neutral solid color contrasting with an object. Delete background details. Delete watermarks. Keep object colors. Sharpen image details",
+            negative_prompt="blurry, distorted, low quality, multiple objects, cluttered, text, watermark, logo, deformed, mutated, bad anatomy, extra limbs, missing parts, overexposed, underexposed, noise, artifacts, jpeg artifacts, compression artifacts, background details, complex background",
         )
 
         # 2. Remove background
