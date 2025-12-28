@@ -94,15 +94,15 @@ class TrellisService:
         if not self.pipeline:
             raise RuntimeError("Trellis pipeline not loaded.")
 
-        image_rgb = trellis_request.image.convert("RGB")
+        images_rgb = [image.convert("RGB") for image in trellis_request.images]
         logger.info(f"Generating Trellis {trellis_request.seed=} and image size {trellis_request.image.size}")
 
         params = self.default_params.overrided(trellis_request.params)
 
         start = time.time()
         try:
-            outputs = self.pipeline.run(
-                image_rgb,
+            outputs = self.pipeline.run_multi_image(
+                images_rgb,
                 seed=trellis_request.seed,
                 sparse_structure_sampler_params={
                     "steps": params.sparse_structure_steps,

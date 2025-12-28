@@ -1,6 +1,6 @@
 # 3D Generation Pipeline
 
-blah blah blah
+Automated pipeline for generating 3D models from 2D images.
 
 ## Requirements
 

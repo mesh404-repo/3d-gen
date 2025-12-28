@@ -124,22 +124,31 @@ class GenerationPipeline:
         image = decode_image(request.prompt_image)
 
         # 1. Edit the image using Qwen Edit
-        image_edited = self.qwen_edit.edit_image(prompt_image=image, seed=request.seed)
+        image_edited = self.qwen_edit.edit_image(
+            prompt_image=image,
+            seed=request.seed,
+            prompt="Show this object in three-quarters view and make sure it is fully visible. Turn background neutral solid color contrasting with an object. Delete background details. Delete watermarks. Keep object colors. Sharpen image details",
+        )
 
         # 2. Remove background
         image_without_background = self.rmbg.remove_background(image_edited)
 
+        original_image_without_background = self.rmbg.remove_background(image)
+
         trellis_result: Optional[TrellisResult] = None
-        
+
         # Resolve Trellis parameters from request
         trellis_params: TrellisParams = request.trellis_params
-       
+
         # 3. Generate the 3D model
         trellis_result = self.trellis.generate(
             TrellisRequest(
-                image=image_without_background,
+                images=[
+                    original_image_without_background,
+                    image_without_background,
+                ],
                 seed=request.seed,
-                params=trellis_params
+                params=trellis_params,
             )
         )
 
