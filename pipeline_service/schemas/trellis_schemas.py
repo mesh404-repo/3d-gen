@@ -29,7 +29,7 @@ TrellisParamsOverrides = TrellisParams.Overrides
 @dataclass
 class TrellisRequest:
     """Request for Trellis 3D generation (internal use only)."""
-    image: Image.Image
+    images: list[Image.Image]
     seed: int
     params: Optional[TrellisParamsOverrides] = None
 

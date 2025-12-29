@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from torchvision import transforms
+from contextlib import contextmanager
 from PIL import Image
 
 from .base import Pipeline
@@ -86,11 +87,21 @@ class TrellisImageTo3DPipeline(Pipeline):
         output_np = np.array(output)
         alpha = output_np[:, :, 3]
         bbox = np.argwhere(alpha > 0.8 * 255)
-        bbox = np.min(bbox[:, 1]), np.min(bbox[:, 0]), np.max(bbox[:, 1]), np.max(bbox[:, 0])
+        bbox = (
+            np.min(bbox[:, 1]),
+            np.min(bbox[:, 0]),
+            np.max(bbox[:, 1]),
+            np.max(bbox[:, 0]),
+        )
         center = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
         size = max(bbox[2] - bbox[0], bbox[3] - bbox[1])
         size = int(size * 1.2)
-        bbox = center[0] - size // 2, center[1] - size // 2, center[0] + size // 2, center[1] + size // 2
+        bbox = (
+            center[0] - size // 2,
+            center[1] - size // 2,
+            center[0] + size // 2,
+            center[1] + size // 2,
+        )
         output = output.crop(bbox)  # type: ignore
         output = output.resize((518, 518), Image.Resampling.LANCZOS)
         output = np.array(output).astype(np.float32) / 255
@@ -99,7 +110,9 @@ class TrellisImageTo3DPipeline(Pipeline):
         return output
 
     @torch.no_grad()
-    def encode_image(self, image: Union[torch.Tensor, list[Image.Image]]) -> torch.Tensor:
+    def encode_image(
+        self, image: Union[torch.Tensor, list[Image.Image]]
+    ) -> torch.Tensor:
         """
         Encode the image.
 
@@ -112,16 +125,18 @@ class TrellisImageTo3DPipeline(Pipeline):
         if isinstance(image, torch.Tensor):
             assert image.ndim == 4, "Image tensor should be batched (B, C, H, W)"
         elif isinstance(image, list):
-            assert all(isinstance(i, Image.Image) for i in image), "Image list should be list of PIL images"
+            assert all(isinstance(i, Image.Image) for i in image), (
+                "Image list should be list of PIL images"
+            )
             image = [i.resize((518, 518), Image.Resampling.LANCZOS) for i in image]
-            image = [np.array(i.convert('RGB')).astype(np.float32) / 255 for i in image]
+            image = [np.array(i.convert("RGB")).astype(np.float32) / 255 for i in image]
             image = [torch.from_numpy(i).permute(2, 0, 1).float() for i in image]
             image = torch.stack(image).to(self.device)
         else:
             raise ValueError(f"Unsupported type of image: {type(image)}")
         
         image = self.image_cond_model_transform(image).to(self.device)
-        features = self.models['image_cond_model'](image, is_training=True)['x_prenorm']
+        features = self.models["image_cond_model"](image, is_training=True)["x_prenorm"]
         patchtokens = F.layer_norm(features, features.shape[-1:])
         return patchtokens
         
@@ -138,8 +153,8 @@ class TrellisImageTo3DPipeline(Pipeline):
         cond = self.encode_image(image)
         neg_cond = torch.zeros_like(cond)
         return {
-            'cond': cond,
-            'neg_cond': neg_cond,
+            "cond": cond,
+            "neg_cond": neg_cond,
         }
 
     def sample_sparse_structure(
@@ -157,9 +172,11 @@ class TrellisImageTo3DPipeline(Pipeline):
             sampler_params (dict): Additional parameters for the sampler.
         """
         # Sample occupancy latent
-        flow_model = self.models['sparse_structure_flow_model']
+        flow_model = self.models["sparse_structure_flow_model"]
         reso = flow_model.resolution
-        noise = torch.randn(num_samples, flow_model.in_channels, reso, reso, reso).to(self.device)
+        noise = torch.randn(num_samples, flow_model.in_channels, reso, reso, reso).to(
+            self.device
+        )
         sampler_params = {**self.sparse_structure_sampler_params, **sampler_params}
         z_s = self.sparse_structure_sampler.sample(
             flow_model,
@@ -270,10 +287,149 @@ class TrellisImageTo3DPipeline(Pipeline):
         """
         Select n smallest sparse structures in terms of number of voxels
         """
-        counts = coords[:,0].unique(return_counts=True)[-1]
-        selected_coords = sorted(coords[:,1:].split(tuple(counts.tolist())), key = lambda x: len(x))[:num_samples]
+        counts = coords[:, 0].unique(return_counts=True)[-1]
+        selected_coords = sorted(
+            coords[:, 1:].split(tuple(counts.tolist())), key=lambda x: len(x)
+        )[:num_samples]
         sizes = torch.tensor(tuple(len(coo) for coo in selected_coords))
         selected_coords = torch.cat(selected_coords, dim=0)
-        indices = torch.arange(num_samples).repeat_interleave(sizes).unsqueeze(-1).to(selected_coords.device, selected_coords.dtype)
+        indices = (
+            torch.arange(num_samples)
+            .repeat_interleave(sizes)
+            .unsqueeze(-1)
+            .to(selected_coords.device, selected_coords.dtype)
+        )
         selected_coords = torch.cat((indices, selected_coords), dim=1)
         return selected_coords
+
+    @contextmanager
+    def inject_sampler_multi_image(
+        self,
+        sampler_name: str,
+        num_images: int,
+        num_steps: int,
+        mode: Literal["stochastic", "multidiffusion"] = "stochastic",
+    ):
+        """
+        Inject a sampler with multiple images as condition.
+
+        Args:
+            sampler_name (str): The name of the sampler to inject.
+            num_images (int): The number of images to condition on.
+            num_steps (int): The number of steps to run the sampler for.
+        """
+        sampler = getattr(self, sampler_name)
+        setattr(sampler, f"_old_inference_model", sampler._inference_model)
+
+        if mode == "stochastic":
+            if num_images > num_steps:
+                print(
+                    f"\033[93mWarning: number of conditioning images is greater than number of steps for {sampler_name}. "
+                    "This may lead to performance degradation.\033[0m"
+                )
+
+            cond_indices = (np.arange(num_steps) % num_images).tolist()
+
+            def _new_inference_model(self, model, x_t, t, cond, **kwargs):
+                cond_idx = cond_indices.pop(0)
+                cond_i = cond[cond_idx : cond_idx + 1]
+                return self._old_inference_model(model, x_t, t, cond=cond_i, **kwargs)
+
+        elif mode == "multidiffusion":
+            from .samplers import FlowEulerSampler
+
+            def _new_inference_model(
+                self,
+                model,
+                x_t,
+                t,
+                cond,
+                neg_cond,
+                cfg_strength,
+                cfg_interval,
+                **kwargs,
+            ):
+                if cfg_interval[0] <= t <= cfg_interval[1]:
+                    preds = []
+                    for i in range(len(cond)):
+                        preds.append(
+                            FlowEulerSampler._inference_model(
+                                self, model, x_t, t, cond[i : i + 1], **kwargs
+                            )
+                        )
+                    pred = sum(preds) / len(preds)
+                    neg_pred = FlowEulerSampler._inference_model(
+                        self, model, x_t, t, neg_cond, **kwargs
+                    )
+                    return (1 + cfg_strength) * pred - cfg_strength * neg_pred
+                else:
+                    preds = []
+                    for i in range(len(cond)):
+                        preds.append(
+                            FlowEulerSampler._inference_model(
+                                self, model, x_t, t, cond[i : i + 1], **kwargs
+                            )
+                        )
+                    pred = sum(preds) / len(preds)
+                    return pred
+
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
+
+        sampler._inference_model = _new_inference_model.__get__(sampler, type(sampler))
+
+        yield
+
+        sampler._inference_model = sampler._old_inference_model
+        delattr(sampler, f"_old_inference_model")
+
+    @torch.no_grad()
+    def run_multi_image(
+        self,
+        images: List[Image.Image],
+        num_samples: int = 1,
+        seed: int = 42,
+        sparse_structure_sampler_params: dict = {},
+        slat_sampler_params: dict = {},
+        formats: List[str] = ["gaussian"],
+        preprocess_image: bool = True,
+        mode: Literal["stochastic", "multidiffusion"] = "stochastic",
+        num_oversamples: int = 1,
+    ) -> dict:
+        """
+        Run the pipeline with multiple images as condition
+
+        Args:
+            images (List[Image.Image]): The multi-view images of the assets
+            num_samples (int): The number of samples to generate.
+            sparse_structure_sampler_params (dict): Additional parameters for the sparse structure sampler.
+            slat_sampler_params (dict): Additional parameters for the structured latent sampler.
+            preprocess_image (bool): Whether to preprocess the image.
+        """
+        if preprocess_image:
+            images = [self.preprocess_image(image) for image in images]
+        cond = self.get_cond(images)
+        cond["neg_cond"] = cond["neg_cond"][:1]
+        torch.manual_seed(seed)
+        num_oversamples = max(num_samples, num_oversamples)
+        ss_steps = {
+            **self.sparse_structure_sampler_params,
+            **sparse_structure_sampler_params,
+        }.get("steps")
+        with self.inject_sampler_multi_image(
+            "sparse_structure_sampler", len(images), ss_steps, mode=mode
+        ):
+            coords = self.sample_sparse_structure(
+                cond, num_oversamples, sparse_structure_sampler_params
+            )
+            coords = (
+                coords
+                if num_oversamples <= num_samples
+                else self.select_coords(coords, num_samples)
+            )
+        slat_steps = {**self.slat_sampler_params, **slat_sampler_params}.get("steps")
+        with self.inject_sampler_multi_image(
+            "slat_sampler", len(images), slat_steps, mode=mode
+        ):
+            slat = self.sample_slat(cond, coords, slat_sampler_params)
+        return self.decode_slat(slat, formats)

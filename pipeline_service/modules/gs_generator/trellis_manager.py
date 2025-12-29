@@ -95,11 +95,12 @@ class TrellisService:
             raise RuntimeError("Trellis pipeline not loaded.")
 
         images_rgb = [image.convert("RGB") for image in trellis_request.images]
-        logger.info(f"Generating Trellis {trellis_request.seed=} and image size {trellis_request.image.size}")
 
         params = self.default_params.overrided(trellis_request.params)
 
         start = time.time()
+
+        buffer = io.BytesIO()
         try:
             outputs = self.pipeline.run_multi_image(
                 images_rgb,
@@ -124,7 +125,7 @@ class TrellisService:
             gaussian = outputs["gaussian"][0]
 
             # Save ply to buffer
-            buffer = io.BytesIO()
+            
             gaussian.save_ply(buffer)
             buffer.seek(0)
 

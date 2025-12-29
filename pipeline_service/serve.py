@@ -110,7 +110,7 @@ async def generate(prompt_image_file: UploadFile = File(...), seed: int = Form(-
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 @app.post("/generate-spz")
-async def generate(prompt_image_file: UploadFile = File(...), seed: int = Form(-1)) -> StreamingResponse:
+async def generate_spz(prompt_image_file: UploadFile = File(...), seed: int = Form(-1)) -> StreamingResponse:
     """
     Upload image file and generate 3D model as SPZ buffer.
     
